@@ -1,0 +1,2630 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.2" snapToGrid="false">
+  <code><![CDATA[;This is an agent-based model of contest competition for the research project
+;"Steep hierarchies without skew? Modeling how ecology and decision-making shape despotism of relationships"
+;currently in revisions at the American Naturalist
+
+;No input files are needed to run this model, but a specific folder structure is necessary for the output (results) files.
+;Empty folders for this purpose are included in the project repository.
+;Ensure that the correct file path to the directory containing these empty folders is correct (see code line 902).
+
+
+extensions [csv matrix]
+;;much of the below code has been borrowed from Marcy's testing environment for primate patch movement
+globals [
+  ;; Landscape parameters
+  quality-max
+  average-clump-size
+  extraction-rate-average
+  digestion-rate-average
+  regrowth-rate
+
+  starting-pop-primates
+
+  go-tests-on?
+  resource-tests-on?
+
+  ;; patchsets and other mutable landscape vars
+  empty-patches
+  resource-patches
+  energy-left
+
+
+
+  ;; vision
+
+  other-primate-detection-radius
+  resource-detection-radius
+
+
+
+
+  countdown-to-longer-processes
+  total-starved
+
+  folder-path
+  attacks-saved
+  avoids-saved
+]
+
+;directed-link-breed [mothers mother] ;; link from offspring to mother
+;directed-link-breed [fathers father];; link from offspring to father
+;directed-link-breed [children child]  ;; link from parent to offspring
+
+;undirected-link-breed [affiliates affiliate]
+;undirected-link-breed [members member] ;;link between primagent and group
+
+breed [primates primate]
+
+
+directed-link-breed [fightsavoided fightavoided] ;; this is a link from the one who avoided TO the opponent they decided not to fight
+directed-link-breed [attacks attack] ;; this is a link from the approaching agent to the opponent that they did decide to fight
+directed-link-breed [victories victory] ;;this is a link from the winner to the loser
+directed-link-breed [defeats defeat] ;; this is a link from the loser to the winner
+
+
+
+primates-own[
+  xp
+  running-xp-avg
+  sex
+  age ;; in years
+  ageclass
+  stored-energy
+  rhp ;; RHP is the resource holding potential - basically, how "strong" an individual is in a fight
+  vision
+  nearest-primates
+  visible-resources ;; list of patches, sorted by penergy
+  patch-picked
+
+  wns
+  lsses
+  fights
+  wns_r
+  lsses_r
+
+   ;; current value of estimated fighting ability, 0.0-1.0
+  xp-delta-list ;; list recording every time the  was changed by a win or loss
+   ;; average of the dom-delta-list
+
+  daily-distance-traveled ;; distance traveled, reset every 12 ticks
+  distance-traveled ;; TOTAL distance traveled by primate
+  total-energy-gained ;; total energy gained over time
+]
+
+;;;now for each of the distinct link breeds I created, I am creating a counter
+fightsavoided-own [avoid-counter]
+attacks-own [attack-counter]
+victories-own [victory-counter]
+defeats-own [defeat-counter]
+
+
+
+patches-own [
+  penergy
+  quality
+  extraction-rate
+]
+
+to setup
+  ca
+  file-close-all
+
+  (ifelse resource-dist = "clumped" [
+    set quality-max 24
+    create_clumped_resources
+  ]
+
+  resource-dist = "uniform" [
+    set quality-max 3
+    create_uniform_resources
+  ]
+  [error "No resources!"])
+
+  color_patches
+
+  set resource-patches (patches with [quality != 0])
+  set empty-patches (patches with [quality = 0])
+  ;; now we have patch-sets of resource patches and patches without resources
+  ;; note that a resource patch's penergy could be 0, but the QUALITY cannot be
+
+  ;; make an initial population of primates
+  set starting-pop-primates 10
+  create_starting_pop
+
+  vision_settings
+
+  ;ask turtles [create-decidenottofight-to other turtles]
+  ask primates [ ;; you're on the right track
+   create-fightsavoided-to other turtles
+    create-attacks-to other turtles
+    create-victories-to other turtles
+    create-defeats-to other turtles
+  ]
+
+  set regrowth-rate (quality-max / 3)
+
+  reset-ticks
+
+  set_folder_path
+  set avoids-saved false
+  set attacks-saved false
+end
+
+to vision_settings
+
+  set other-primate-detection-radius 3
+  set resource-detection-radius 4
+
+end
+
+to color_patches
+  ask resource-patches [
+    (ifelse penergy = 0 [set pcolor white]
+      penergy = 3 [set pcolor 68]
+
+      [set pcolor scale-color green penergy 0 24]
+      )
+
+    ]
+end
+
+to create_clumped_resources ;; picks a new center-point and then generates a clump around it
+
+  set resource-patches (patch-set patch 0 0) ; patch 5 5 patch -5 5 patch -5 -5 patch 5 -5)
+
+  ask resource-patches [
+    set resource-patches (patch-set patches in-radius 5 resource-patches)
+    ;set empty-patches other empty-patches
+  ]
+
+  ask resource-patches [
+
+    set quality one-of (range 10 quality-max)
+    set penergy quality
+    set extraction-rate (quality / 3)
+  ]
+end
+
+
+to create_uniform_resources
+
+   set resource-patches patches
+
+  ask resource-patches [
+
+    set quality quality-max ;; all patches set to quality 3 (approximate average calculated across several runs in conflic_dev_2 model [Summed Patch Qualities excel file])
+    set penergy quality
+
+    set extraction-rate 1
+  ]
+
+
+end
+
+
+
+to create_starting_pop ;; creates a beginning population of primate agents, of varialbe age and sex, and places them randomly on the landscapeexprunning-exp-avg
+  create-primates starting-pop-primates [
+    set label who
+    ;;set label return_rhp ;each turtle displays their return-rhp value
+    set size 1 ; size of turtles to 5
+    set vision 20
+    set stored-energy 10
+    set xp 0.50
+    set xp-delta-list (list 0.50)
+    set running-xp-avg 0.50
+
+    ;; sex
+    set sex "F"
+
+    ;; age and ageclass
+    set age 10
+    set ageclass "adult"
+
+    ;; rhp
+    set rhp one-of [1 2 3 4 5 6 7 8] ;; rhp = 0 --> none
+                     ;; rhp = 1 --> low
+                     ;; rhp = 2 --> mid-low
+                     ;; rhp = 3 --> mid-high
+                     ;; rhp = 4 --> high
+    ;set rhp one-of (range 1 4)
+
+    ;; use function return_rhp to set a value for rhp as the outcome here
+    if assessment-who = "opponent" [ ;;need to do this as before (when 1 simply added to top and bottom) individuals never fought as prob of fighting was always 0
+      set wns 1
+      set lsses 1
+    ]
+    setxy random-xcor random-ycor
+ set distance-traveled 1
+  ]
+  ask primates [
+    set color scale-color red rhp 1 8
+  ]
+end
+
+
+to go ;; put main schedule procedures for readabilitydecay_exp
+
+  tick
+  if not any? primates [stop]
+
+  ask primates [
+    find_nearest-primates
+    find_visible-resources
+
+    (ifelse penergy > 0 [eat] ;; if there is energy in the current patch, eat - eventually need to allow for leaving patches even when food remaains
+      [move] ) ;; if there is no food here, move
+
+  ;ask patches in-cone resource-detection-radius visual-angle [set pcolor pcolor + 1]
+
+
+  ]
+
+  color_patches
+
+
+
+
+  if ticks mod 20 = 0 [
+  ask patches with [penergy < quality] [;if there are any empty patches let them regrow
+    if NOT any? turtles-here [
+      regrow
+      ;;if go-tests-on? [type "this patch regrew! \n"]
+    ]
+   ]
+  ]
+
+  if ticks mod 24 = 0 [
+    ask primates [
+      if daily-distance-traveled = 0 [
+        error (word who " hasn't moved")
+        stop
+      ]
+      set distance-traveled distance-traveled + daily-distance-traveled
+      set daily-distance-traveled 0
+    ]
+
+  ]
+
+
+  if ticks = 15000 and burnin-test? = false [
+    ask victories [set victory-counter 0]
+    ask defeats [set defeat-counter 0]
+    ask fightsavoided [set avoid-counter 0]
+    ask attacks [set attack-counter 0]
+  ]
+
+
+ if burn-in-complete [
+    if attacks-complete and not attacks-saved [
+      make_attack_output
+    ]
+
+    if avoids-complete and not avoids-saved [
+      make_avoid_output
+
+    ]
+  ]
+
+
+
+end
+
+to find_nearest-primates
+      set nearest-primates other primates in-radius other-primate-detection-radius
+  if (count nearest-primates > 3) [
+    set nearest-primates min-n-of 3 nearest-primates [distance myself]
+  ]
+
+end
+
+to find_visible-resources
+  set visible-resources patches in-radius resource-detection-radius with [penergy > 0] ;; find all resource patches, into an agent-set
+
+;  if member? patch-here visible-resources [
+;    ask patch-here [
+;      let not-me-patches other [visible-resources] of myself
+;      ask myself [set visible-resources not-me-patches]
+;      ]
+;  ]
+
+
+
+  set visible-resources (sort-on [(- penergy)] visible-resources) ;; sort by penergy descending; now this is a list
+
+end
+
+to eat
+  ;;show "I'm chowin down!"
+  move-to patch-here
+  set stored-energy stored-energy + extraction-rate
+  set penergy penergy - extraction-rate
+  set total-energy-gained total-energy-gained + 1
+
+  ask patch-here [
+      (ifelse penergy = 0 [set pcolor black]
+        [set pcolor scale-color green penergy 0 quality-max])
+    ]
+
+
+end
+
+
+
+
+to move  ;; this is something already asked of primates, so don't ask primates again within this func!
+  ;; movement will be a compromise between resources, movement cohesion, avoidance
+
+
+  ;; first, change direction via either "wander" or "forage"
+  (ifelse
+    stored-energy = 0 [;; this is effectively a placeholder - agents started with 10 energy and never lost any, so this was never called.
+      wander
+    ]
+    (not empty? visible-resources) [
+      forage
+    ]
+    [
+      wander
+      ])
+
+  ;; then, check that path ahead is clear; if someone is there, decide whether to attack or not
+  (ifelse any? other primates-on patch-ahead 1
+    [decide_to_attack]
+    [
+      fd 1
+      set daily-distance-traveled daily-distance-traveled + 1
+  ])
+;
+
+  if any? other primates-here [
+    move-to min-one-of (patches with [not any? primates-here]) [distance myself]
+    ;show "I had to jump away because someone was there!"
+  ]
+end
+
+to forage ;;
+  set heading new_headings
+  ;;type "changing heading to " type max-one-of patches in-cone resource-detection-radius visual-angle [penergy] type "\n"
+end
+
+to wander ;; this is mutually exclusive with forage -
+
+  set heading heading + ((random 30) - 15) ;; totally random turns
+
+
+end
+
+
+to-report heading-towards-nearest-primates  ;; turtle procedure
+  ;; "towards myself" gives us the heading from the other turtle
+  ;; to me, but we want the heading from me to the other turtle,
+  ;; so we add 180
+  let x-component mean [sin (towards myself + 180)] of nearest-primates
+  let y-component mean [cos (towards myself + 180)] of nearest-primates
+  ifelse x-component = 0 and y-component = 0
+    [ report heading ]
+    [ report atan x-component y-component ]
+
+end
+
+to-report new_headings
+  let change-in-heading 0 ;;; i think this might be causing an issue
+
+  ;;agent responds to either conspecifics or resources
+
+  carefully [
+    (ifelse (any? nearest-primates AND (distance min-one-of nearest-primates [distance myself]) > 7) [
+      ;;agent is too far from other primates, so ignore resources and point towards nearest-primates
+      set change-in-heading heading-towards-nearest-primates
+      ;show "heading towards " show nearest-primates
+      set patch-picked no-patches
+  ]
+  [ ;;; nearest-primates are close enough, so pick the best visible patch - or you have no nearest-primates at all
+     (ifelse (is-patch? patch-picked) and (member? patch-picked visible-resources) [
+          set change-in-heading towards patch-picked
+          ;show "still heading towards" show patch-picked
+        ]
+        [
+             ;;;;need to pick the patch from visible-resources
+       set patch-picked first visible-resources
+       set change-in-heading towards patch-picked
+            ;;; this should be replaced with a way for the priamte to choose alternatively if another primate is already on that
+       ;show "new patch picked: " show patch-picked
+       ])
+  ])]
+  [
+    error error-message
+    set change-in-heading towards one-of neighbors with [not any? primates-here]
+  ]
+  ;show change-in-heading
+  report change-in-heading
+end
+
+to-report am-i-the-winner [opponent]
+  let self-winner? one-of list true false
+
+  if winning = "deterministic" [
+    set self-winner? ([rhp] of opponent < rhp)
+    ;show "Deterministic. Opponent: " type [rhp] of opponent type " my own rhp: " type rhp
+  ]
+
+  if winning = "probabilistic" [
+      let j random-float 1.0 ;; j is a random decimal-number that is used below to determine if an individual wns a fight or not (fight influenced by rhp value)
+      let prob_self 0.5
+
+      (ifelse function = "linear" [
+           set prob_self (rhp / (rhp + [rhp] of opponent))
+           ] ;; prob_self denotes the probability that an individual will win a fight (calculated using rhp values of the individuals involved and compared to j)
+         function = "sigmoid" [
+           set prob_self (rhp ^ 2) / (rhp ^ 2 + ([rhp] of opponent) ^ 2)
+           ])
+
+
+      set self-winner? (j < prob_self)
+
+    ;show "Probabilistic. the die-roll was " type j
+    ;show "opponent: " type [rhp] of opponent type " my own rhp: " type rhp
+  ]
+
+  if winning = "initiator" [
+    set self-winner? true ;; in this scenario, the approaching agent always wins
+  ]
+  ;show self-winner? type " should be true if self wins and false if opp wins"
+  report self-winner?
+end
+
+to fight [opponent] ;; function to have individuals (self and opponent) fight each other
+    if opponent != nobody [ ;; if the opponent does not have a value of "nobody", then run the code
+
+      ask opponent [set fights ([fights] of opponent + 1)] ;; have the opponent increase their count of fights by 1
+      set fights (fights + 1) ;; have self increase their count of fights by 1
+
+      (ifelse am-i-the-winner opponent [
+
+      ;; I WON
+        ;show "self won"
+        update_winner_against opponent
+        ask opponent [update_loser_against myself]
+        fd 1
+
+        ask out-victory-to opponent [set victory-counter victory-counter + 1] ;;increases the counter on the victory link going from self of opponent by 1
+        ask in-defeat-from opponent [set defeat-counter defeat-counter + 1] ;; increases the counter on the defeat link going from opponent to self by one
+      ]
+      [
+        ;; I LOST
+        ;show "self lost :("
+        ask in-victory-from opponent [set victory-counter victory-counter + 1]
+        ask out-defeat-to opponent [set defeat-counter defeat-counter + 1]
+
+        update_loser_against opponent
+        ask opponent [update_winner_against myself]
+      ])
+
+    update_dom_list
+    ask opponent [update_dom_list]
+    ]
+end
+
+
+to update_winner_against [losing]
+  set wns wns + 1 ;; opponent recalculates their wns counter to increase it by 1
+          ;;show "I win! \n"
+
+          ifelse xp > 0.84 [
+            set xp 1.0
+          ][
+            set xp xp + 0.16
+          ]
+
+        ;;show "I win!"
+        set wns_r (wns / fights) ;; self recalculates their wns ratio to reflect updated fights and wns
+        set lsses_r (lsses / fights) ;; self recalculates their lsses ratio to reflect updated fights and lsses
+
+end
+
+
+to update_loser_against [winner]
+  set lsses (lsses + 1) ;; opponent recalculates their lsses counter to increase it by 1
+   ;;;; also exp stuff here!!!!
+          ifelse xp > 0.16 [
+             set xp xp - 0.16
+             ][
+             set xp 0.01
+             ]
+
+
+          set heading (towards winner + one-of (range 90 270)) ;; opponent turns around
+          fd 3 ;; opponent runs away
+
+
+
+              if any? other primates-here [
+                 move-to min-one-of (patches with [not any? primates-here]) [distance myself]
+                 ;show "I had to jump away because someone was there!"
+  ]
+
+          ;;show "run away!"
+          set wns_r (wns / fights) ;; opponent recalculates their wns ratio to reflect updated fights and wns
+          set lsses_r (lsses / fights) ;; opponent recalculates their lsses ratio to reflect updated fights and lsses
+end
+
+
+to update_dom_list
+      set xp-delta-list fput xp xp-delta-list
+
+    ifelse length xp-delta-list > 4 [
+      set running-xp-avg mean sublist xp-delta-list 0 5 ;;;;; the running average is only from the 10 most recent wins or losses
+    ][
+      set running-xp-avg mean xp-delta-list
+    ]
+end
+
+
+
+to-report cost-estimation [opponent]
+  let cost-estimate 0
+
+      ;;;;;;;;;;;;;;;
+    ;; ESTIMATE COSTS FOR EACH STRATEGY
+    (ifelse assessment-info = "history" [ ;; linked to history switch; if this on, primates make decision based on exp
+
+      ;; mutual assess switch allows primates to make decisions based on their and their opponent's exp
+      (ifelse assessment-who = "mutual" [
+
+        (ifelse function = "linear" [
+          set cost-estimate (([xp] of opponent - xp) + 1) / 2 ;;; this puts the difference in scores back on a 0.0-1.0 scale
+          ]
+          function = "sigmoid" [
+          set cost-estimate (([xp] of opponent) ^ 2) / (xp ^ 2 + ([xp] of opponent) ^ 2)
+         ]
+      )]
+
+        assessment-who = "self" [
+          set cost-estimate (1.0 - xp) ;; have to do the + 1s to avoid dividing by 0
+        ]
+
+        assessment-who = "opponent" [
+          set cost-estimate ([xp] of opponent);; the opponents ratio of wins to losses, 1 - to make it the same direction as others
+        ]
+        [error "You need to turn on the mutual-assess, self-only, or opponent-only switch."])
+      ;;show prob-decision type " probability of deciding to fight \n"
+    ]
+
+
+    assessment-info = "knowledge" [ ;; linked to knowledge switch; if this on then primates make conflict decisions based on their and their opponent's rhp values
+
+      (ifelse assessment-who = "mutual" [  ;; mutual assess switch allows primates to make decisions based on their and their opponent's rhp values
+
+        (ifelse function = "linear" [set cost-estimate (([rhp] of opponent - rhp) + 7) / 14] ;; changed to 14 and 7 becuse starting rhp values at 1 rather than 0 (1-8)]
+        function = "sigmoid" [set cost-estimate (([rhp] of opponent) ^ 2) / (rhp ^ 2 + ([rhp] of opponent) ^ 2) ])
+
+      ]
+
+      assessment-who = "self" [
+        set cost-estimate (1.0 - (( rhp - 1 ) / 7))
+      ]
+
+      assessment-who = "opponent" [
+          set cost-estimate ((([rhp] of opponent) - 1) / 7)
+      ]
+          [error "You need to turn onthe mutual-assess, self-only, or opponent-only switch."])
+      ]
+      [error "Neither history nor knowledge switch was on!"])
+  report cost-estimate
+end
+
+
+to-report benefit-estimation
+  let bene 0.01
+
+  if sum [penergy] of neighbors > 0 [
+    set bene (([penergy] of patch-ahead 1) / sum [penergy] of neighbors) ;; the benefit assessment is the energy of patch in dispute as proportion of highest possible qualit
+  ]
+
+  report bene
+end
+
+
+to decide_to_attack ;; function to inform turtles on how to decide to fight
+
+  let opponent one-of other turtles-on patch-ahead 1 ;; define i as one of the other primates on the next patch ahead (and not self as opponent)
+  ;;show i type "is my opponent \n\n"
+
+  ifelse [penergy] of patch-ahead 1 > 0 [
+
+
+  if opponent != nobody [;; if i (the opponent) is not "nobody", then do the following function (this should be the very first thing checked)
+
+    set running-xp-avg mean xp-delta-list
+    let bene benefit-estimation
+    let cost-est 0.01 ;; estimate costs will be calculated below, depending on current assessment strategy
+    let probr 1.0 ;; prob of making the right choice. default to 1, so that agents will make the optimal choice if something goes wrong
+
+    ;; then we can do a die roll
+    let roll random-float 1.0
+
+set cost-est cost-estimation opponent
+
+    ;;;;;;;;;;;;;
+    ;; USE COSTS TO DETERMINE BEST DECISION
+  (ifelse bene > cost-est [
+
+        (ifelse function = "linear" [set probr (bene / (bene + cost-est))]
+          function = "sigmoid" [set probr ((bene ^ 2) / (bene ^ 2 + (cost-est ^ 2)))])
+
+
+          (ifelse probr > roll [
+              ask out-attack-to opponent [set attack-counter attack-counter + 1]
+              fight opponent
+          ][
+              ask out-fightavoided-to opponent [set avoid-counter avoid-counter + 1]
+        rt one-of (range 90 270)
+        fd 1
+          ])
+
+        ]
+        cost-est >= bene [
+          ;;show "we decided not to fight \n" ;; if the fight does not occur, then self says, "we decided not to fight"
+          ;let correct-choice avoid
+
+          (ifelse function = "linear" [set probr (cost-est / (bene + cost-est))]
+            function = "sigmoid" [set probr ((cost-est ^ 2) / (bene ^ 2 + (cost-est ^ 2)))])
+
+
+          (ifelse probr > roll [
+               ask out-fightavoided-to opponent [set avoid-counter avoid-counter + 1]
+          rt one-of (range 90 270)
+          fd 1
+           ][
+               ask out-attack-to opponent [set attack-counter attack-counter + 1]
+               fight opponent
+           ])
+        ])
+  ]
+  ]
+  [move-to one-of neighbors with [not any? primates-here]]
+end
+
+to decay_xp
+  ask primates [
+    if running-xp-avg < 0 [
+    set running-xp-avg 0
+  ]
+    if running-xp-avg > 1 [
+      set running-xp-avg 1
+    ]
+  ]
+  ask primates with [xp != running-xp-avg] [
+    ifelse xp > running-xp-avg [
+      ;; exp is higher than the running average
+      set xp xp - 0.01
+    ][
+      ;; exp is lower than the running average
+      set xp xp + 0.005
+    ]
+  ]
+end
+
+
+to regrow
+  ;; i need to add an if statement here so that penergy only goes back up to quality
+  set penergy penergy + regrowth-rate ; this adds the regroth rate to the patches energy after it was eaten so that the patch can re-grow
+
+end
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; OUTPUT PROCEDURES ;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+to-report stop-condish
+
+  ifelse attacks-saved AND avoids-saved [
+    report true
+  ][
+    report false
+  ]
+
+
+end
+
+
+to-report stop-burnin-test
+
+  ifelse ticks >= burnin-test-dur [
+    report true
+  ][
+    report false
+  ]
+
+end
+
+
+to-report burn-in-complete
+    ifelse ticks > 15000 [
+    report true
+  ][
+    report false
+  ]
+
+end
+
+
+to-report attacks-complete
+    ifelse (sum [attack-counter] of attacks) >= 450 [
+    report true
+  ][
+    report false
+  ]
+
+end
+
+to-report avoids-complete
+    ifelse (sum [avoid-counter] of fightsavoided) >= 450 [
+    report true
+  ][
+    report false
+  ]
+
+
+end
+
+
+
+
+
+
+
+
+
+to make_avoid_output
+   let scenario "none"
+  (ifelse assessment-info = "history" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-hist"]
+    assessment-who = "opponent" [set scenario "oppo-hist"]
+    assessment-who = "self" [set scenario "self-hist"]
+    [error "switch error"])
+  ]
+  assessment-info = "knowledge" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-rhp"]
+    assessment-who = "opponent" [set scenario "oppo-rhp"]
+    assessment-who = "self" [set scenario "self-rhp"]
+    [error "switch error"]  )
+  ])
+
+  let asym "none"
+  (ifelse (winning = "deterministic") [set asym "deter"] (winning = "probabilistic") [set asym "prob"] [set asym "init"])
+
+  let resource-type "none"
+  ifelse resource-dist = "clumped" [set resource-type "clump"][set resource-type "uni"]
+
+
+
+  ;;AVOID
+
+  set-current-directory (word folder-path "\\" "avoid")
+  let file-name (word "avoidance-output-" asym "-" resource-type "-" scenario "-" behaviorspace-run-number ".csv")
+  file-open file-name
+  file-type "self, "
+  file-type "opp, "
+    file-print "fightsavoided"
+    file-close
+
+  file-open file-name
+  ask fightsavoided [
+      file-type (word ([who] of end1) ", ")
+      file-type (word ([who] of end2) ", ")
+      file-print avoid-counter
+    ]
+  file-close
+
+  set avoids-saved true
+
+end
+
+
+to make_attack_output
+
+  let scenario "none"
+  (ifelse assessment-info = "history" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-hist"]
+    assessment-who = "opponent" [set scenario "oppo-hist"]
+    assessment-who = "self" [set scenario "self-hist"]
+    [error "switch error"])
+  ]
+  assessment-info = "knowledge" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-rhp"]
+    assessment-who = "opponent" [set scenario "oppo-rhp"]
+    assessment-who = "self" [set scenario "self-rhp"]
+    [error "switch error"]  )
+  ])
+
+  let asym "none"
+  (ifelse winning = "deterministic" [set asym "deter"] (winning = "probabilistic") [set asym "prob"] [set asym "init"])
+
+  let resource-type "none"
+  ifelse resource-dist = "clumped" [set resource-type "clump"][set resource-type "uni"]
+
+
+
+  ;;CONFLICT FILE
+
+  set-current-directory (word folder-path "\\" "conflict")
+  let file-name (word "victories-" asym "-" resource-type "-" scenario "-" behaviorspace-run-number ".csv")
+
+  show file-name
+
+  file-open file-name
+  file-type "winner, "
+  file-type "loser, "
+  file-print "victorycount"
+  file-close
+
+  file-open file-name
+  ask victories [
+    file-type (word ([who] of end1) ", ")
+    file-type (word ([who] of end2) ", ")
+    file-print victory-counter
+  ]
+  file-close
+
+
+;; ATTACK FILE (NEW)
+
+  set-current-directory (word folder-path "\\" "attacks")
+  let file-name2 (word "attacks-" asym "-" resource-type "-" scenario "-" behaviorspace-run-number ".csv")
+
+  show file-name2
+
+  file-open file-name2
+  file-type "approaching, "
+  file-type "opponent, "
+  file-print "attackcount"
+  file-close
+
+  file-open file-name2
+  ask attacks [
+    file-type (word ([who] of end1) ", ")
+    file-type (word ([who] of end2) ", ")
+    file-print attack-counter
+  ]
+  file-close
+
+set attacks-saved true
+
+
+end
+
+to set_folder_path
+  ;change "user-directory" below to the directory on your machine that contains the empty folder structure provided with the code repository
+  ;otherwise you will be prompted to select the directory
+  set folder-path user-directory
+
+  ;; folders should look like hm.c.d
+  let scenario-folder "none"
+  ifelse assessment-info = "history" [set scenario-folder "h"][set scenario-folder "k"]
+
+  (ifelse assessment-who = "mutual" [set scenario-folder (word scenario-folder "m.")]
+  assessment-who = "opponent" [set scenario-folder (word scenario-folder "o.")]
+  assessment-who = "self" [set scenario-folder (word scenario-folder "s.")]
+  [error "switch error"])
+
+
+  ifelse resource-dist = "clumped" [set scenario-folder (word scenario-folder "c.")][set scenario-folder (word scenario-folder "u.")]
+  (ifelse winning = "deterministic" [set scenario-folder (word scenario-folder "d")] (winning = "probabilistic") [set scenario-folder (word scenario-folder "p")] [set scenario-folder (word scenario-folder "i")])
+
+  set folder-path (word folder-path "\\" scenario-folder)
+
+
+
+end
+
+
+to make_energy_output
+
+
+  let scenario "none"
+  (ifelse assessment-info = "history" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-hist"]
+    assessment-who = "opponent" [set scenario "oppo-hist"]
+    assessment-who = "self" [set scenario "self-hist"]
+    [error "switch error"])
+  ]
+  assessment-info = "knowledge" [
+    (ifelse assessment-who = "mutual" [set scenario "mutual-rhp"]
+    assessment-who = "opponent" [set scenario "oppo-rhp"]
+    assessment-who = "self" [set scenario "self-rhp"]
+    [error "switch error"]  )
+  ])
+
+  let asym "none"
+  (ifelse winning = "deterministic" [set asym "deter"] (winning = "probabilistic") [set asym "prob"] [set asym "init"])
+
+  let resource-type "none"
+  ifelse resource-dist = "clumped" [set resource-type "clump"][set resource-type "uni"]
+
+  ;;energy_efficiency
+  set-current-directory (word folder-path "\\" "energy_efficiency")
+  let file-name3 (word "foraging-eff-" asym "-" resource-type "-" scenario "-" behaviorspace-run-number ".csv")
+  file-open file-name3
+  file-type "who, "
+  file-type "energy-over-distance, "
+  file-print "energy-over-time"
+  file-close
+
+  file-open file-name3
+  ask primates [
+    file-type (word who ", ")
+    file-type (word (total-energy-gained / distance-traveled) ", ")
+    file-print total-energy-gained / ticks
+  ]
+ file-close
+
+end
+
+to-report foraging-efficiency-dist
+  report mean [total-energy-gained / distance-traveled] of primates
+
+end
+
+
+to-report foraging-efficiency-time
+  report mean [total-energy-gained / ticks] of primates
+end
+
+
+to-report dir-cons-index-wins
+  ;; directional consistency index is the average of the following for all dyads:
+  ;; (high - low) / (high + low)
+  ;; where high is the outcomes of the  behavioral actor of higher occurence and low is the behavioral outcomes of the actor with lower occurence
+
+  let dci 0
+  let dci-list []
+
+  ask primates [
+
+    ask other primates [
+      let a [victory-counter] of in-victory-from myself
+      let b [victory-counter] of out-victory-to myself
+
+      if a > 0 or b > 0 [ ;; check that there is a valid interaction
+        (ifelse (a > b) [ ;;did you win more than me?
+            let index (a - b) / (a + b)
+            set dci-list lput index dci-list
+
+          ][;; or did i win more than you?
+            let index (b - a) / (b + a)
+            set dci-list lput index dci-list
+          ])
+      ]
+
+    ]
+  ]
+
+  if not empty? dci-list [set dci mean dci-list]
+  report dci
+
+end
+
+
+
+to-report dir-cons-index-attacks
+  ;; directional consistency index is the average of the following for all dyads:
+  ;; (high - low) / (high + low)
+  ;; where high is the outcomes of the  behavioral actor of higher occurence and low is the behavioral outcomes of the actor with lower occurence
+
+  let dci 0
+  let dci-list []
+
+  ask primates [
+
+    ask other primates [
+      let a [attack-counter] of in-attack-from myself
+      let b [attack-counter] of out-attack-to myself
+
+      if a > 0 or b > 0 [ ;; check that there is a valid interaction
+        (ifelse (a > b) [ ;;did you win more than me?
+          let index (a - b) / (a + b)
+          set dci-list lput index dci-list
+
+        ][;; or did i win more than you?
+          let index (b - a) / (b + a)
+          set dci-list lput index dci-list
+        ])
+      ]
+
+
+    ]
+  ]
+
+    if not empty? dci-list [set dci mean dci-list]
+  report dci
+
+end
+
+
+to-report dir-cons-index-avoids
+  ;; directional consistency index is the average of the following for all dyads:
+  ;; (high - low) / (high + low)
+  ;; where high is the outcomes of the  behavioral actor of higher occurence and low is the behavioral outcomes of the actor with lower occurence
+
+  let dci 0
+  let dci-list []
+
+  ask primates [
+
+    ask other primates [
+      let a [avoid-counter] of in-fightavoided-from myself
+      let b [avoid-counter] of out-fightavoided-to myself
+
+      if a > 0 or b > 0 [ ;; check that there is a valid interaction
+        (ifelse (a > b) [ ;;did you win more than me?
+          let index (a - b) / (a + b)
+          set dci-list lput index dci-list
+
+        ][;; or did i win more than you?
+          let index (b - a) / (b + a)
+          set dci-list lput index dci-list
+        ])
+      ]
+
+
+    ]
+  ]
+
+    if not empty? dci-list [set dci mean dci-list]
+  report dci
+
+end]]></code>
+  <widgets>
+    <view x="239" wrappingAllowedX="true" y="40" frameRate="30.0" minPycor="-10" height="499" showTickCounter="true" patchSize="23.6" fontSize="10" wrappingAllowedY="true" width="499" tickCounterLabel="ticks" maxPycor="10" updateMode="0" maxPxcor="10" minPxcor="-10"></view>
+    <button x="39" y="41" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="63">setup</button>
+    <button x="149" y="43" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="63">go</button>
+    <chooser x="56" y="233" height="60" variable="resource-dist" current="1" width="138" display="resource-dist">
+      <choice type="string" value="uniform"></choice>
+      <choice type="string" value="clumped"></choice>
+    </chooser>
+    <chooser x="55" y="303" height="60" variable="winning" current="1" width="138" display="winning">
+      <choice type="string" value="deterministic"></choice>
+      <choice type="string" value="probabilistic"></choice>
+      <choice type="string" value="initiator"></choice>
+    </chooser>
+    <chooser x="55" y="163" height="60" variable="assessment-info" current="0" width="138" display="assessment-info">
+      <choice type="string" value="knowledge"></choice>
+      <choice type="string" value="history"></choice>
+    </chooser>
+    <chooser x="54" y="93" height="60" variable="assessment-who" current="1" width="138" display="assessment-who">
+      <choice type="string" value="self"></choice>
+      <choice type="string" value="opponent"></choice>
+      <choice type="string" value="mutual"></choice>
+    </chooser>
+    <plot x="891" autoPlotX="true" yMax="1.0" autoPlotY="true" y="112" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="min and mean foraging efficiency">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+        <setup></setup>
+        <update>plot mean [total-energy-gained] of primates / (ticks + 1)</update>
+      </pen>
+      <pen interval="1.0" mode="0" display="pen-1" color="-7500403" legend="true">
+        <setup></setup>
+        <update>plot min [total-energy-gained] of primates / (ticks + 1)</update>
+      </pen>
+    </plot>
+    <slider x="43" step="1000" y="594" max="10000" width="172" display="burnin-test-dur" height="50" min="1000" direction="Horizontal" default="42000.0" variable="burnin-test-dur"></slider>
+    <switch x="72" y="518" height="40" on="false" variable="burnin-test?" width="123" display="burnin-test?"></switch>
+    <chooser x="54" y="384" height="60" variable="function" current="1" width="139" display="function">
+      <choice type="string" value="linear"></choice>
+      <choice type="string" value="sigmoid"></choice>
+    </chooser>
+  </widgets>
+  <info>## WHAT IS IT?
+
+(a general understanding of what the model is trying to show or explain)
+
+## HOW IT WORKS
+
+(what rules the agents use to create the overall behavior of the model)
+
+## HOW TO USE IT
+
+(how to use the model, including a description of each of the items in the Interface tab)
+
+## THINGS TO NOTICE
+
+(suggested things for the user to notice while running the model)
+
+## THINGS TO TRY
+
+(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+
+## EXTENDING THE MODEL
+
+(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+
+## NETLOGO FEATURES
+
+(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+
+## RELATED MODELS
+
+(models in the NetLogo Models Library and elsewhere which are of related interest)
+
+## CREDITS AND REFERENCES
+
+(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="conflict_test-defeat" repetitions="2" sequentialRunOrder="true" runMetricsEveryStep="true">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count turtles</metric>
+        <metric>count [defeat-counter] of defeats</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="history-mutual" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="knowledge-mutual" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="history-self" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="knowledge-self" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="history-opp" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="knowledge-opponent" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1000000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="runtime-error-test-history-opp" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="10000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>type sum [avoid-counter] of fightsavoided</postRun>
+      <constants>
+        <enumeratedValueSet variable="opponent-only?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="knowledge?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="history?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="mutual-assess?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="self-only?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging" repetitions="1000" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;probabilistic&quot;"></value>
+          <value value="&quot;deterministic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging-prob-uni" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging-prob-clump" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>mean [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging-deter-clump" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>min [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging-deter-uni" repetitions="1000" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>min [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="testerrorwnoforaging-deter-clump (1)" repetitions="1000" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="3000">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>min [total-energy-gained] of primates</metric>
+        <metric>mean [total-energy-gained] of primates</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="oct-full-experiment" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="150000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="oct-missing-one" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="20000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="nov-full-experiment" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="150000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_output_csv</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="experiment" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="1">
+      <setup>setup</setup>
+      <metrics>
+        <metric>sum [penergy] of patches</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="dec-full-experiment" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="150000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_energy_output</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="asymmetry">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="initiator-experiment" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="150000">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_energy_output</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="winning">
+          <value value="&quot;initiator&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+          <value value="&quot;self&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="burnin-test" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="10001">
+      <setup>setup</setup>
+      <go>go</go>
+      <exitCondition>stop-burnin-test</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+        <metric>dir-cons-index-wins</metric>
+        <metric>dir-cons-index-attacks</metric>
+        <metric>dir-cons-index-avoids</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="winning">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+          <value value="&quot;initiator&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="burnin-test-dur">
+          <value value="1000"></value>
+          <value value="2000"></value>
+          <value value="3000"></value>
+          <value value="4000"></value>
+          <value value="5000"></value>
+          <value value="6000"></value>
+          <value value="7000"></value>
+          <value value="8000"></value>
+          <value value="9000"></value>
+          <value value="10000"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="burnin-testv3" repetitions="5" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="20001">
+      <setup>setup</setup>
+      <go>go</go>
+      <exitCondition>stop-burnin-test</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+        <metric>dir-cons-index-wins</metric>
+        <metric>dir-cons-index-attacks</metric>
+        <metric>dir-cons-index-avoids</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="winning">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+          <value value="&quot;initiator&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="burnin-test-dur" first="1000" step="1000" last="20000"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="burnin-testv4" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="50001">
+      <setup>setup</setup>
+      <go>go</go>
+      <exitCondition>stop-burnin-test</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+        <metric>dir-cons-index-wins</metric>
+        <metric>dir-cons-index-attacks</metric>
+        <metric>dir-cons-index-avoids</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="winning">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+          <value value="&quot;initiator&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+        </enumeratedValueSet>
+        <steppedValueSet variable="burnin-test-dur" first="1000" step="1000" last="50000"></steppedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="new results dec 22" repetitions="10" sequentialRunOrder="true" runMetricsEveryStep="false">
+      <setup>setup</setup>
+      <go>go</go>
+      <postRun>make_energy_output</postRun>
+      <exitCondition>stop-condish</exitCondition>
+      <metrics>
+        <metric>ticks</metric>
+        <metric>sum [victory-counter] of victories</metric>
+        <metric>sum [avoid-counter] of fightsavoided</metric>
+        <metric>foraging-efficiency-time</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="winning">
+          <value value="&quot;deterministic&quot;"></value>
+          <value value="&quot;probabilistic&quot;"></value>
+          <value value="&quot;initiator&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="resource-dist">
+          <value value="&quot;uniform&quot;"></value>
+          <value value="&quot;clumped&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-info">
+          <value value="&quot;history&quot;"></value>
+          <value value="&quot;knowledge&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="assessment-who">
+          <value value="&quot;mutual&quot;"></value>
+          <value value="&quot;self&quot;"></value>
+          <value value="&quot;opponent&quot;"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>
